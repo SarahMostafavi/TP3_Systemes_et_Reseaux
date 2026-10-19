@@ -8,10 +8,16 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include "tosfs.h"
+#include <string.h>
+#include <errno.h>
 
 #define NB_MAX_INODES 32
 /* Nombre de dentry que peut contenir un bloc */
 #define DENTRIES_PER_BLOCK (TOSFS_BLOCK_SIZE / sizeof(struct tosfs_dentry))
+
+/* Time out pour fuse */
+#define STAT_TIMEOUT_SEC 1.0
+
 
 /* Zone mémoire de l'image (gardée pour pouvoir la libérer à la fin) */
 static char *fs_base;
@@ -107,9 +113,46 @@ static void print_root_dir(void)
     }
 }
 
+/* Renvoie l'inode cassocié à ino
+   SI ino invalide alors renvoie null */
+static struct tosfs_inode *get_inode(fuse_ino_t ino)
+{
+    if (ino < TOSFS_ROOT_INODE || ino > superblock->inodes)
+        return NULL;
+    return &inodes[ino];   /* à corriger en inodes[ino - 1] selon ton test */
+}
+
+
+/* Remplit une struct stat à partir d'une inode du filesystem */
+static void fill_stat(const struct tosfs_inode *inode, struct stat *st)
+{
+    memset(st, 0, sizeof(*st));
+    st->st_ino   = inode->inode;
+    st->st_mode  = inode->mode | inode->perm;
+    st->st_nlink = inode->nlink;
+    st->st_uid   = inode->uid;
+    st->st_gid   = inode->gid;
+    st->st_size  = inode->size;
+}
+
+/* Renvoie les attributs d'un inode */
+static void futosfs_ll_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
+{
+    struct tosfs_inode *inode = get_inode(ino);
+
+    if (inode == NULL) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
+
+    struct stat st;
+    fill_stat(inode, &st);
+    fuse_reply_attr(req, &st, STAT_TIMEOUT_SEC);
+}
+
 /* Fonctions appelées par FUSE */
 static struct fuse_lowlevel_ops futosfs_oper = {
-    
+    .getattr = futosfs_ll_getattr,
 };
 
 /* Monte le filesystem et traite les demandes jusqu'au démontage
